@@ -1,0 +1,6 @@
+# Example prior / inertial props override for experiments (2D quadrotor)
+algo_config:
+  prior_info:
+    prior_prop:
+      M: 0.027
+      Iyy: 0.000014

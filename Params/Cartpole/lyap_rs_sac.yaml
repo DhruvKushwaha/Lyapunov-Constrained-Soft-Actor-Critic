@@ -1,0 +1,31 @@
+# Lyapunov Reward-Shaping SAC hyperparameters for Cartpole.
+#
+# Base SAC params identical to Params/Cartpole/sac.yaml for fair comparison.
+# tau, actor_lr, critic_lr are Optuna HPO results from the SCG reference (rounded).
+# lyap_rs_weight = 0.0 → auto-calibrate from E[|r|]/E[|ΔV|] over random rollouts.
+algo: lyap_rs_sac
+algo_config:
+  hidden_dim: 256
+  activation: relu
+  use_entropy_tuning: False
+  gamma: 0.98
+  tau: 0.12
+  init_temperature: 0.2
+
+  train_interval: 1
+  train_batch_size: 512
+  actor_lr: 4.52e-4
+  critic_lr: 2.25e-2
+  entropy_lr: 0.001
+
+  max_env_steps: 150000
+  warm_up_steps: 100
+  max_buffer_size: 1000000
+  eval_batch_size: 10
+
+  log_interval: 3000
+  eval_interval: 3000
+  eval_save_best: True
+
+  lyap_rs_weight: 0.0
+  calibrate_steps: 500

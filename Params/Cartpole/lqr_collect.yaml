@@ -1,0 +1,7 @@
+# LQR weights for cartpole EDMD / baseline rollouts (aligned with safe-control-gym
+# examples/lqr/config_overrides/cartpole/lqr_cartpole_stab.yaml)
+algo: lqr
+algo_config:
+  q_lqr: [1, 1, 1, 1]
+  r_lqr: [0.1]
+  discrete_dynamics: true

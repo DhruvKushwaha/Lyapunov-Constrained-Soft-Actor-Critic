@@ -1,21 +1,24 @@
 # -----------------------------------------------------------------------------------
 #                   Storage
 # -----------------------------------------------------------------------------------
+"""
+Replay buffer for **LC-SAC** with an extra ``X_error`` channel (tracking error).
+
+``x_error_dim`` controls the width of the X_error field: 6 for 2D quadrotor,
+4 for cartpole, 12 for 3D quadrotor.  Passed to ``__init__`` at construction time.
+
+For vanilla SAC, use ``safe_control_gym``'s ``SACBuffer`` via ``rl.train`` / ``SAC``.
+"""
 import numpy as np
 import torch
 from gymnasium.spaces import Box
 
 class SACBuffer(object):
-    '''Storage for replay buffer during training.
+    """Fixed-size replay storage with ``obs``, ``act``, ``X_error``, etc., for LC-SAC training."""
 
-    Attributes:
-        max_size (int): maximum size of the replay buffer.
-        batch_size (int): number of samples (steps) per batch.
-        scheme (dict): describs shape & other info of data to be stored.
-        keys (list): names of all data from scheme.
-    '''
+    # Attributes: max_size, batch_size, scheme, keys — see __init__ / reset.
 
-    def __init__(self, obs_space, act_space, max_size, batch_size=None):
+    def __init__(self, obs_space, act_space, max_size, batch_size=None, x_error_dim=6):
         super().__init__()
         self.max_size = max_size
         self.batch_size = batch_size
@@ -27,9 +30,6 @@ class SACBuffer(object):
             act_dim = act_space.n
 
         N = max_size
-        # X_error is the tracking error (first 6 elements of state for 2D quadrotor)
-        # Shape: (x, x_dot, z, z_dot, theta, theta_dot)
-        x_error_dim = 6
 
         self.scheme = {
             'obs': {

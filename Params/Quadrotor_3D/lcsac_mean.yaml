@@ -1,0 +1,42 @@
+# LC-SAC-Meanunov hyperparameters for quadrotor_3D.
+#
+# Base SAC params are identical to sac.yaml / SCG reference for fair comparison.
+# LC-SAC-Mean-specific parameters:
+#   alpha_V   : CLF exponential decay rate in violation margin (V' <= (1-alpha_V)*V)
+#   lam_lr    : learning rate for the bidirectional Lagrange multiplier
+#   lam_max   : upper bound on the Lagrange multiplier
+algo: lcsac_mean
+algo_config:
+  # model args — identical to sac.yaml / SCG reference
+  hidden_dim: 128
+  activation: relu
+  use_entropy_tuning: False
+
+  # optim args — identical to sac.yaml / SCG reference
+  train_interval: 1
+  train_batch_size: 256
+  actor_lr: 0.001
+  critic_lr: 0.001
+  entropy_lr: 0.001
+
+  # runner args — identical to lcsac.yaml
+  max_env_steps: 400000
+  warm_up_steps: 1000
+  rollout_batch_size: 4
+  num_workers: 1
+  max_buffer_size: 1000000
+  deque_size: 10
+  eval_batch_size: 10
+
+  # misc
+  log_interval: 4000
+  save_interval: 0
+  num_checkpoints: 0
+  eval_interval: 4000
+  eval_save_best: True
+  tensorboard: False
+
+  # LC-SAC-Mean specific — not present in sac.yaml / lcsac.yaml
+  alpha_V: 0.0
+  lam_lr: 1.0e-3
+  lam_max: 50.0

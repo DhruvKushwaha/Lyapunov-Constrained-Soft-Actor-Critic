@@ -1,260 +1,324 @@
-# Lyapunov-Constrained SAC for 2D Quadrotor Control
+# LC-SAC Quadrotor Trajectory Tracking
 
-This repository implements and compares **Baseline SAC (Soft Actor-Critic)** and **LC-SAC (Lyapunov-Constrained SAC)** for 2D quadrotor trajectory tracking. The LC-SAC algorithm incorporates Lyapunov stability constraints using Extended Dynamic Mode Decomposition (EDMD) to ensure safety during learning.
+This repository implements and compares four online reinforcement learning algorithms for quadrotor and cartpole control in [safe-control-gym](https://github.com/utiasDSL/safe-control-gym), with **EDMD / EDMDc** (Koopman operator) models used as the shared Lyapunov function across three stability-constrained variants.
+
+## Algorithms
+
+| Algorithm | File | Description |
+|-----------|------|-------------|
+| **SAC** | `SAC.py` | Vanilla Soft Actor-Critic (Haarnoja et al. 2018). No Lyapunov constraint. |
+| **LC-SAC** | `LC_SAC.py` + `LC_SAC_Train.py` | Lyapunov-constrained SAC . CVaR-based CLF decrease constraint via adaptive Lagrangian with ramp-in schedule. |
+| **LC-SAC-Mean** | `LCSAC_Mean.py` | Ablation of LC-SAC with mean (not CVaR) violation aggregation, bidirectional λ update, and no ramp-in schedule. Uses the same Koopman CLF as LC-SAC. |
+| **Lyap-RS-SAC** | `Lyap_RS_SAC.py` | Lyapunov potential reward shaping (Dong et al. 2020 ablation). Shapes reward as `r' = r + w*(V(z_t) - γ*V(z_{t+1}))` using the Koopman CLF as potential. |
+
+> **Note on Koopman CLF:** All three Lyapunov algorithms use the same Koopman-based CLF, `V(z) = z^T P z`, where `z = Φ(x_error)` is the EDMD-lifted tracking error and `P` is the Riccati solution on the lifted `(A, B)` matrices. LC-SAC-Mean and Lyap-RS-SAC are **controlled ablations** that isolate the constraint enforcement mechanism (CVaR Lagrangian vs. mean Lagrangian vs. reward shaping) while holding the CLF constant.
+
+## Environments and Presets
+
+| Preset | Environment | Task | EDMD assets |
+|--------|-------------|------|-------------|
+| `quadrotor_2d_track` | 2D quadrotor | Trajectory tracking (circle) | `results/edmd/quadrotor_2d_track/` |
+| `quadrotor_2d_stab` | 2D quadrotor | Stabilization to hover | `results/edmd/quadrotor_2d_stab/` |
+| `cartpole_stab` | Cartpole | Stabilization to upright | `results/edmd/cartpole/` |
+| `cartpole_track` | Cartpole | Trajectory tracking (circle in zx-plane) | `results/edmd/cartpole/` |
+| `quadrotor_3d_track` | 3D quadrotor | Trajectory tracking (circle) | `results/edmd/quadrotor_3d/` |
+| `quadrotor_3d_stab` | 3D quadrotor | Stabilization to hover | `results/edmd/quadrotor_3d_stab/` |
+
+SAC runs on all presets without EDMD. All other algorithms require the corresponding EDMD assets.
 
 ## Features
 
-- **Baseline SAC**: Standard Soft Actor-Critic implementation for quadrotor control
-- **LC-SAC**: Lyapunov-constrained SAC with stability guarantees
-- **EDMD Model**: Extended Dynamic Mode Decomposition for system identification
-- **Multiple Trials Support**: Automated multi-trial experiments with statistical analysis
-- **Comprehensive Visualization**: Reward comparisons, trajectory tracking, and Lyapunov loss analysis
+| Area | Description |
+|------|-------------|
+| **Unified RL training** | `train_rl.py` / `python -m rl.train` — all 4 algorithms, 6 presets, YAML-driven |
+| **Koopman / EDMD** | `edmd/` — PID data collection, EDMDc fitting, LQR on lifted `(A, B)`, hyperparameter tuning |
+| **Experiment suite** | `experiments/run_online_suite.py` — multi-seed, multi-algo, multi-preset batch runner |
+| **Results comparison** | `experiments/compare_results.py` — reward curves, Lyapunov loss, comparison tables |
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.8+
-- CUDA-capable GPU (optional, but recommended for faster training)
+- Python 3.10 recommended
+- CUDA optional; PyTorch uses GPU when available
 
-### Dependencies
-
-Install the required Python packages:
+### Python dependencies
 
 ```bash
 pip install torch torchvision
-pip install numpy scipy matplotlib
-pip install pyyaml
-pip install scikit-learn
+pip install numpy scipy matplotlib pyyaml scikit-learn gymnasium
 pip install pykoopman
-pip install control  # python-control
-pip install gymnasium
+pip install control   # python-control for edmd/lqr.py
 ```
 
-### Safe Control Gym
+### safe-control-gym
 
-This project uses the `safe-control-gym` library for the quadrotor environment and SAC implementation. Install it from source:
+This repo vendors **`safe-control-gym/`**. Install in editable mode:
 
 ```bash
-git clone https://github.com/utiasDSL/safe-control-gym.git
 cd safe-control-gym
 pip install -e .
+cd ..
 ```
 
-### Project Setup
+## Project Layout
 
-1. Clone this repository:
-```bash
-git clone <repository-url>
-cd Multiple_trialV2
 ```
-
-2. Ensure all dependencies are installed (see above)
-
-3. The project structure should look like:
-```
-Multiple_trialV2/
+LC-SAC-Quadrotor-Trajectory-Tracking/
+├── train_rl.py                        # CLI entry → rl.train
+├── rl/
+│   └── train.py                       # run_sac / run_lcsac / run_lcsac_mean / run_lyap_rs_sac
+├── SAC.py                             # SAC training loop + evaluation helpers
+├── LC_SAC.py                          # LCSAC agent (networks, update, Koopman CLF)
+├── LC_SAC_Train.py                    # train_lcsac() training loop
+├── LCSAC_Mean.py                      # LCSACMeanAgent (subclass of LCSAC, mean violation)
+├── Lyap_RS_SAC.py                     # Lyapunov reward-shaping training loop
+├── Modified_SAC_Buffer.py             # Replay buffer with X_error field for Lyapunov algos
+├── PID_controller_quadrotor.py        # PID control + EDMD data collection
+├── edmd/
+│   ├── collect_quad_2d.py             # PID rollouts → quadrotor_2d_track data
+│   ├── collect_quad_2d_stab.py        # PID rollouts → quadrotor_2d_stab data
+│   ├── collect_quad_3d.py             # PID rollouts → quadrotor_3d_track data
+│   ├── collect_quad_3d_stab.py        # PID rollouts → quadrotor_3d_stab data
+│   ├── collect_cartpole.py            # PID rollouts → cartpole data
+│   ├── train_quad_2d.py               # EDMDc + LQR for 2D track
+│   ├── train_quad_2d_stab.py          # EDMDc + LQR for 2D stab
+│   ├── train_quad_3d.py               # EDMDc + LQR for 3D track
+│   ├── train_quad_3d_stab.py          # EDMDc + LQR for 3D stab
+│   ├── train_cartpole.py              # EDMDc + LQR for cartpole
+│   ├── tune_quad_2d.py                # Hyperparameter grid search — 2D track
+│   ├── tune_quad_2d_stab.py           # Hyperparameter grid search — 2D stab
+│   ├── tune_quad_3d.py                # Hyperparameter grid search — 3D track
+│   ├── tune_quad_3d_stab.py           # Hyperparameter grid search — 3D stab
+│   ├── tune_cartpole.py               # Hyperparameter grid search — cartpole
+│   ├── lqr.py                         # Discrete-time LQR / Riccati solver
+│   ├── metrics.py                     # EDMD evaluation metrics
+│   └── plotting.py                    # EDMD diagnostic figures
+├── experiments/
+│   ├── run_online_suite.py            # Multi-seed experiment runner
+│   └── compare_results.py            # Aggregate plots and comparison tables
 ├── Params/
-│   └── Quadrotor_2D/
-│       ├── quadrotor_2D_track.yaml
-│       └── sac_quadrotor_2D.yaml
-├── Saved_data/          # Will contain EDMD models and data
-├── RL_Model/           # Will contain training results
-├── baseline_SAC_2D.py
-├── LC_SAC_2D_discrete.py
-├── LC_SAC.py
-├── EDMD_2D_discrete.py
-├── run_multiple_trials.py
-└── plot_multiple_trials_results.py
+│   ├── Quadrotor_2D/                  # env_track.yaml, env_stab.yaml, sac.yaml, lcsac.yaml, …
+│   ├── Quadrotor_3D/                  # env_track_rl.yaml, env_stab.yaml, sac.yaml, lcsac.yaml, …
+│   ├── Cartpole/                      # env_stab.yaml, env_track.yaml, sac.yaml, lcsac.yaml, …
+│   └── algorithms/                    # pid_drone_gains.yaml
+├── results/
+│   ├── edmd/                          # EDMD assets (models, LQR matrices, tuning results)
+│   │   ├── data/                      # Raw .npz datasets from PID collection
+│   │   ├── quadrotor_2d_track/        # edmd_model.pkl, lqr_matrices.npz, tune_results.json
+│   │   ├── quadrotor_2d_stab/
+│   │   ├── quadrotor_3d/              # (quadrotor_3d_track assets)
+│   │   ├── quadrotor_3d_stab/
+│   │   └── cartpole/
+│   └── online/                        # RL training outputs
+│       └── <algo>/<preset>/seed_<N>/ # train_summary.json, eval_rewards*.json, lyap_loss*.json
+└── safe-control-gym/                  # Vendored safe-control-gym
 ```
 
 ## Usage
 
-### 1. Training EDMD Model (Required for LC-SAC)
+### Step 1 — Build EDMD models (required for Lyapunov algorithms)
 
-Before training LC-SAC, you need to train an EDMD model for system identification:
+Each preset needs its own EDMD model. Use `tune_*` to run the full hyperparameter grid search and save the best model. SAC skips this step entirely.
 
+**2D Quadrotor:**
 ```bash
-python EDMD_2D_discrete.py
+python -m edmd.collect_quad_2d
+python -m edmd.tune_quad_2d --retrain-best
+
+python -m edmd.collect_quad_2d_stab
+python -m edmd.tune_quad_2d_stab --retrain-best
 ```
 
-This will:
-- Load tracking error data from PID controller (stored in `Saved_data/data_EDMD_2D.npz`)
-- Train an EDMD model using Radial Basis Functions (RBF)
-- Compute LQR gains using the Riccati equation
-- Save the model to `Saved_data/edmd_model_2D.pkl` and LQR matrices to `Saved_data/lqr_matrices_2D.npz`
-
-**Note**: You need to have collected tracking error data using a PID controller first. The data should be saved as `Saved_data/data_EDMD_2D.npz` with keys:
-- `tracking_error`: Shape (N, 6) - tracking errors for all states
-- `tracking_error_next`: Shape (N, 6) - next tracking errors
-- `U`: Shape (N, 2) - control inputs
-
-### 2. Training Individual Models
-
-#### Baseline SAC
+**3D Quadrotor:**
 ```bash
-python baseline_SAC_2D.py
+python -m edmd.collect_quad_3d
+python -m edmd.tune_quad_3d --retrain-best
+
+python -m edmd.collect_quad_3d_stab
+python -m edmd.tune_quad_3d_stab --retrain-best
 ```
 
-#### LC-SAC
+**Cartpole (shared across stab and track):**
 ```bash
-python LC_SAC_2D_discrete.py
+python -m edmd.collect_cartpole
+python -m edmd.tune_cartpole --retrain-best
 ```
 
-Both scripts will:
-- Train the respective agent on the 2D quadrotor environment
-- Save training results, models, and plots to `RL_Model/`
-- Evaluate the trained agent on the specified trajectory (default: circle)
+Assets are saved to `results/edmd/<preset>/edmd_model.pkl` and `lqr_matrices.npz`.
 
-### 3. Running Multiple Trials
-
-To run multiple trials with different random seeds for statistical analysis:
+### Step 2 — Train a single run
 
 ```bash
-python run_multiple_trials.py
+# SAC baseline (no EDMD needed)
+python train_rl.py --algo sac --preset quadrotor_2d_track
+
+# LC-SAC
+python train_rl.py --algo lcsac --preset quadrotor_2d_track
+
+# LC-SAC-Mean
+python train_rl.py --algo lcsac_mean --preset quadrotor_2d_stab
+
+# Lyap-RS-SAC
+python train_rl.py --algo lyap_rs_sac --preset cartpole_stab
+
+# 3D quadrotor
+python train_rl.py --algo sac   --preset quadrotor_3d_track
+python train_rl.py --algo lcsac --preset quadrotor_3d_stab
+
+# Override seed and output directory
+python train_rl.py --algo lcsac --preset quadrotor_2d_track --seed 3 \
+    --output-dir results/online/lcsac/quadrotor_2d_track/seed_3
+
+# Override trajectory type (tracking presets only)
+python train_rl.py --algo sac --preset quadrotor_2d_track --trajectory figure8
 ```
 
-This script will:
-- Run 5 trials each for Baseline SAC and LC-SAC (configurable in the script)
-- Generate mean-variance plots for each algorithm
-- Create comparison plots showing:
-  - Episode rewards comparison
-  - Evaluation rewards comparison
-  - Best evaluation reward comparison
-  - Final 10 episodes average reward
-  - Trajectory tracking comparison
-- Save aggregated data to `RL_Model/Multiple_Trials/`
+Outputs land under `results/online/<algo>/<preset>/seed_<N>/`.
 
-### 4. Plotting Multiple Trials Results
+Available `--algo` values: `sac`, `lcsac`, `lcsac_mean`, `lyap_rs_sac`
 
-To visualize and analyze results from multiple trials:
+Available `--preset` values: `quadrotor_2d_track`, `quadrotor_2d_stab`, `cartpole_stab`, `cartpole_track`, `quadrotor_3d_track`, `quadrotor_3d_stab`
 
 ```bash
-python plot_multiple_trials_results.py
+python -m rl.train --help
 ```
 
-This will:
-- Load aggregated data from `RL_Model/Multiple_Trials/`
-- Generate comprehensive comparison plots:
-  - Episode rewards comparison (Mean ± Std)
-  - Evaluation rewards comparison
-  - Best evaluation reward bar chart
-  - Final 10 episodes average reward
-  - Trajectory comparison (XZ plane)
-  - Lyapunov loss decay (LC-SAC only)
-- Compute and display numerical metrics comparison
-- Save plots to `RL_Model/Multiple_Trials/Comparison_Plots/`
+### Step 3 — Multi-seed experiment suite
+
+```bash
+# Full suite — all 4 algos × all 6 presets × 5 seeds (120 runs)
+python experiments/run_online_suite.py
+
+# Filter by algo or preset
+python experiments/run_online_suite.py --algos sac lcsac
+python experiments/run_online_suite.py --presets quadrotor_3d_track quadrotor_3d_stab
+
+# Resume — skip runs that already have train_summary.json
+python experiments/run_online_suite.py --resume
+
+# Dry run — print commands without executing
+python experiments/run_online_suite.py --dry-run
+
+# Override seeds
+python experiments/run_online_suite.py --seeds 1 2 3
+```
+
+### Step 4 — Compare results
+
+```bash
+python experiments/compare_results.py
+```
+
+Reads `results/online/` and produces per-preset reward curves and Lyapunov loss comparison plots across all four algorithms. Output figures saved under `results/plots/`.
 
 ## Configuration
 
-### Environment Configuration
+YAML files follow a two-level structure: **env config** (task, physics, reward weights) and **algo config** (network, optimizer, training hyperparameters).
 
-Edit `Params/Quadrotor_2D/quadrotor_2D_track.yaml` to configure:
-- Quadrotor physical parameters
-- Task configuration (trajectory type, etc.)
-- Episode settings
+### Environment configs
 
-### Algorithm Configuration
+| File | Preset |
+|------|--------|
+| `Params/Quadrotor_2D/env_track.yaml` | `quadrotor_2d_track` |
+| `Params/Quadrotor_2D/env_stab.yaml` | `quadrotor_2d_stab` |
+| `Params/Quadrotor_3D/env_track_rl.yaml` | `quadrotor_3d_track` |
+| `Params/Quadrotor_3D/env_stab.yaml` | `quadrotor_3d_stab` |
+| `Params/Cartpole/env_stab.yaml` | `cartpole_stab` |
+| `Params/Cartpole/env_track.yaml` | `cartpole_track` |
 
-Edit `Params/Quadrotor_2D/sac_quadrotor_2D.yaml` to configure:
-- Network architecture (hidden dimensions, activation)
-- Learning rates (actor, critic, entropy)
-- Training hyperparameters (gamma, tau, batch size, etc.)
-- Training duration (max_env_steps)
+### Algorithm configs
 
-### Running Different Trajectories
+| File | Algorithm | Env |
+|------|-----------|-----|
+| `Params/Quadrotor_2D/sac.yaml` | SAC | 2D quad |
+| `Params/Quadrotor_2D/lcsac.yaml` | LC-SAC | 2D quad |
+| `Params/Quadrotor_2D/lcsac_mean.yaml` | LC-SAC-Mean | 2D quad |
+| `Params/Quadrotor_2D/lyap_rs_sac.yaml` | Lyap-RS-SAC | 2D quad |
+| `Params/Quadrotor_3D/sac.yaml` | SAC | 3D quad |
+| `Params/Quadrotor_3D/lcsac.yaml` | LC-SAC | 3D quad |
+| `Params/Quadrotor_3D/lcsac_mean.yaml` | LC-SAC-Mean | 3D quad |
+| `Params/Quadrotor_3D/lyap_rs_sac.yaml` | Lyap-RS-SAC | 3D quad |
+| `Params/Cartpole/sac.yaml` | SAC | cartpole |
+| `Params/Cartpole/lcsac.yaml` | LC-SAC | cartpole |
+| `Params/Cartpole/lcsac_mean.yaml` | LC-SAC-Mean | cartpole |
+| `Params/Cartpole/lyap_rs_sac.yaml` | Lyap-RS-SAC | cartpole |
 
-To change the trajectory type, modify the `trajectory_type` parameter in:
-- `run_multiple_trials.py` (line 756): `sac_config['trajectory_type'] = 'circle'`
+### Key hyperparameters (Lyapunov algorithms)
 
-Supported trajectory types: `'circle'`, `'figure8'`, `'square'`.
+| Parameter | LC-SAC | LC-SAC-Mean | Lyap-RS-SAC |
+|-----------|--------|-------------|-------------|
+| `lam_max` | `50.0` | `50.0` | — |
+| `lam_lr` | `1e-3` | `1e-3` | — |
+| `decay_rate` (CLF decrease margin) | `0.0` | — | — |
+| `alpha_V` (CLF decrease margin) | — | `0.0` | — |
+| `cvar_q` (CVaR quantile) | `0.75` | — (uses mean) | — |
+| `lyap_ramp_steps` | 50k (2D) / 20k (cart) / 100k (3D) | — (no ramp) | — |
+| `lyap_rs_weight` | — | — | auto-calibrated |
+| `calibrate_steps` | — | — | `500` |
 
-## Results
+## Results Layout
 
-### Performance Comparison
-
-The LC-SAC algorithm demonstrates improved safety and stability compared to Baseline SAC while maintaining competitive reward performance. Results from multiple trials show:
-
-- **Convergence**: LC-SAC achieves stable convergence with Lyapunov constraints
-- **Safety**: Lyapunov loss decays over training, ensuring stability
-- **Performance**: Both algorithms achieve similar peak rewards, with LC-SAC providing better stability guarantees
-
-### Example Results Structure
-
-After running multiple trials, the results are organized as:
-
-```
-RL_Model/Multiple_Trials/
-├── baseline_SAC/
-│   ├── baseline_sac_episode_rewards_all_trials.npy
-│   ├── baseline_sac_episode_rewards_mean.npy
-│   ├── baseline_sac_eval_rewards_all_trials.npy
-│   ├── baseline_sac_summary.json
-│   └── trial_1_seed_1/
-│       └── ...
-├── LC_SAC/
-│   └── ...
-└── Comparison_Plots/
-    ├── reward_comparison.png
-    ├── trajectory_comparison.png
-    ├── lyapunov_loss_decay.png
-    └── numerical_metrics_comparison.json
-```
-
-## Project Structure
-
-```
-Multiple_trialV2/
-├── baseline_SAC_2D.py              # Baseline SAC training script
-├── LC_SAC_2D_discrete.py           # LC-SAC training script
-├── LC_SAC.py                        # LC-SAC agent implementation
-├── Modified_SAC_Buffer.py          # Modified replay buffer for LC-SAC
-├── EDMD_2D_discrete.py             # EDMD model training
-├── PID_controller_2D.py            # PID controller for data collection
-├── run_multiple_trials.py          # Multi-trial experiment runner
-├── plot_multiple_trials_results.py # Results visualization
-├── Params/                          # Configuration files
-│   └── Quadrotor_2D/
-├── Saved_data/                      # EDMD models and collected data
-└── RL_Model/                        # Training results and models
-```
+| Path | Contents |
+|------|----------|
+| `results/online/<algo>/<preset>/seed_<N>/` | `train_summary.json`, best model checkpoint, `eval_rewards*.json`, `lyap_loss*.json` |
+| `results/edmd/<preset>/` | `edmd_model.pkl`, `lqr_matrices.npz`, `tune_results.json`, `best_config.json`, diagnostic figures |
+| `results/edmd/data/` | Raw `.npz` transition datasets from PID collection |
+| `results/plots/` | Comparison figures from `compare_results.py` |
 
 ## Citations
 
-If you use this code in your research, please cite the following:
+### LC-SAC
 
-### Safe Control Gym
 ```bibtex
-@article{safe_control_gym,
-  title={safe-control-gym: A Unified Benchmark Suite for Safe Learning-based Control and Reinforcement Learning},
-  author={Yuan, Jingyun and Carrillo, Luis and Leung, Chi Hay and Abbeel, Pieter},
-  journal={arXiv preprint arXiv:2109.12325},
-  year={2021}
+@article{lcsac2026,
+  title={LC-SAC: Lyapunov-Constrained Soft Actor-Critic via Koopman Operator Theory for Trajectory Tracking and Stabilization},
+  author={Kushwaha, Dhruv S. and Biron, Zoleikha A.},
+  journal={arXiv preprint arXiv:2602.04132},
+  year={2026}
 }
 ```
 
-### PyKoopman
+Paper: https://arxiv.org/abs/2602.04132
+
+### BLAC (original — this codebase uses a Koopman CLF ablation, not the full method)
+
 ```bibtex
-@software{pykoopman,
-  author = {E. Kaiser and J. N. Kutz and S. L. Brunton},
-  title = {PyKoopman: A Python Package for Data-Driven Approximation of the Koopman Operator},
-  year = {2022},
-  url = {https://github.com/dynamicslab/pykoopman}
+@inproceedings{zhao2023blac,
+  title={Stable and Safe Reinforcement Learning via a Barrier-Lyapunov Actor-Critic Approach},
+  author={Zhao, Liqun and Gan, Lu and Liu, Cunjia and Shi, Zhongke},
+  booktitle={IEEE Conference on Decision and Control (CDC)},
+  year={2023}
 }
 ```
 
-### SAC Algorithm
+### Lyapunov reward shaping (original — this codebase uses a Koopman CLF ablation)
+
+```bibtex
+@article{dong2020lyapunov,
+  title={Principled Reward Shaping for Reinforcement Learning via Lyapunov Stability Theory},
+  author={Dong, Hanhan and Ding, Zihan and Huang, Shaocheng and Ding, Zhengtao},
+  journal={Neurocomputing},
+  volume={393},
+  pages={83--90},
+  year={2020}
+}
+```
+
+### SAC
+
 ```bibtex
 @inproceedings{haarnoja2018soft,
   title={Soft Actor-Critic: Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor},
   author={Haarnoja, Tuomas and Zhou, Aurick and Abbeel, Pieter and Levine, Sergey},
-  booktitle={International conference on machine learning},
+  booktitle={International Conference on Machine Learning},
   year={2018},
   organization={PMLR}
 }
 ```
 
-### EDMD
+### EDMD / Koopman operator
+
 ```bibtex
 @article{williams2015data,
   title={A data-driven approximation of the Koopman operator: Extending dynamic mode decomposition},
@@ -268,11 +332,33 @@ If you use this code in your research, please cite the following:
 }
 ```
 
+### safe-control-gym
+
+```bibtex
+@article{safe_control_gym,
+  title={safe-control-gym: A Unified Benchmark Suite for Safe Learning-based Control and Reinforcement Learning},
+  author={Yuan, Jingyun and Carrillo, Luis and Leung, Chi Hay and Abbeel, Pieter},
+  journal={arXiv preprint arXiv:2109.12325},
+  year={2021}
+}
+```
+
+### PyKoopman
+
+```bibtex
+@software{pykoopman,
+  author = {E. Kaiser and J. N. Kutz and S. L. Brunton},
+  title = {PyKoopman: A Python Package for Data-Driven Approximation of the Koopman Operator},
+  year = {2022},
+  url = {https://github.com/dynamicslab/pykoopman}
+}
+```
+
 ## Authors
 
-- Dhruv Kushwaha
+- Dhruv Kushwaha (dhruv.kushwaha@ufl.edu)
 
 ## Acknowledgments
 
-- Built on top of the [safe-control-gym](https://github.com/utiasDSL/safe-control-gym) framework
-- Uses [PyKoopman](https://github.com/dynamicslab/pykoopman) for EDMD implementation
+- [safe-control-gym](https://github.com/utiasDSL/safe-control-gym)
+- [PyKoopman](https://github.com/dynamicslab/pykoopman)

@@ -1,7 +1,9 @@
-''' LC_SAC.py: Lyapunov Constrained SAC agent
-    Author: Dhruv Kushwaha
-    Date: 2026-01-06
-'''
+"""
+Lyapunov-constrained **SAC** agent for quadrotor tracking.
+
+Uses a Koopman/EDMD observables map and lifted LQR matrix ``P`` to penalize violation of a stability
+certificate alongside standard SAC actor–critic losses. Consumed by ``LC_SAC_Train`` and ``rl.train``.
+"""
 import torch
 from torch import optim
 import torch.nn.functional as F
@@ -11,15 +13,25 @@ from safe_control_gym.controllers.sac.sac_utils import MLPActor, MLPQFunction
 
 # Hyperparameters
 ACTIVATION = "relu"
-DECAY_RATE = 1e-3
 EPS = 1e-6  # tolerance; can be small >0
 
 # --- LC-SAC Agent (Lyapunov Constrained SAC) ---
 class LCSAC:
     def __init__(self, state_dim, action_dim, action_range, hidden_dim, device, edmd_model,
-                 P_lifted, A, B, gamma=0.99, tau=0.005, init_temperature=0.2, actor_lr=3e-4,
-                 critic_lr=1e-4, entropy_lr=1e-4, use_entropy_tuning=False, quadtype="quadrotor_2D"):
-        '''Initializes the agent (matches official implementation).'''
+                 P_lifted, A, B, gamma=0.99, tau=0.005, init_temperature=0.2, actor_lr=0.001,
+                 critic_lr=0.001, entropy_lr=0.001, use_entropy_tuning=False, quadtype="quadrotor_2D",
+                 lyap_ramp_steps=50000, state_error_dim=None,
+                 edmd_action_low=None, edmd_action_high=None,
+                 lam_max=1.0, lam_lr=1e-4, decay_rate=1e-3, cvar_q=0.9):
+        """Build networks, Lyapunov multiplier, and optimizers for LC-SAC.
+
+        Args:
+            lyap_ramp_steps: Gradient update steps over which the Lyapunov constraint weight
+                linearly ramps from 0 → 1.  Set to 0 to disable ramping (always full strength).
+                A higher value gives the actor more time to learn a reasonable base policy
+                from PID-like data before the stability constraint becomes active, avoiding
+                instability from EDMD extrapolation errors early in training.
+        """
         # Initialize parameters
         self.device = device
         self.gamma = float(gamma)
@@ -38,13 +50,50 @@ class LCSAC:
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.quadtype = quadtype
-        self.q = 0.9 # CVaR level (Not too small to avoid underflow)
+        if state_error_dim is not None:
+            self.state_error_dim = int(state_error_dim)
+        elif quadtype == "quadrotor_2D":
+            self.state_error_dim = 6
+        elif quadtype == "quadrotor_3D":
+            self.state_error_dim = 12
+        else:
+            raise ValueError(f"Unknown quadtype {quadtype!r}; pass state_error_dim explicitly.")
+        self.q = float(cvar_q)  # CVaR quantile: top-(1-q) violations are penalized
+
+        # V(Φ(0)) bias: RBF centers are at nonzero positions so Φ(0) ≠ 0 and V(0) ≠ 0.
+        # Subtract this constant so V_adj(0) = 0 — required for V to be a valid CLF
+        # (V(goal) = 0). Cached once since P and EDMD centers are fixed after init.
+        if edmd_model is not None:
+            z0 = edmd_model.observables.transform(
+                np.zeros((1, self.state_error_dim), dtype=np.float32))
+            z0_t = torch.FloatTensor(z0).to(self.device)
+            with torch.no_grad():
+                self.V_bias = (z0_t @ self.P_lifted @ z0_t.T).detach()
+        else:
+            self.V_bias = torch.zeros(1, 1, device=self.device)
+
+        # Lyapunov constraint ramp-in schedule
+        self.lyap_ramp_steps = max(0, int(lyap_ramp_steps))
+        self._update_count = 0  # counts gradient update calls
 
         # Initialize lagrange multiplier for Lyapunov constraint
-        self.lam_lr = 1e-4
+        self.lam_lr  = float(lam_lr)
+        self.lam_max = float(lam_max)
+        self.decay_rate = float(decay_rate)
         self.lam = torch.nn.Parameter(torch.tensor(0.0, device=self.device))
-        # self.lam_optim = torch.optim.Adam([self.lam], lr=self.lam_lr)
-        self.lam_max = 1.1e-1 # optional constraint on lam
+
+        # Physical (pre-normalization) action bounds for EDMD B-matrix scaling.
+        # When normalized_rl_action_space=True the actor outputs in [-1,1], but B
+        # was fitted on raw thrust data. Store physical bounds so _to_edmd_action()
+        # can rescale before applying B.
+        self.edmd_action_low = (
+            torch.FloatTensor(edmd_action_low).to(self.device)
+            if edmd_action_low is not None else None
+        )
+        self.edmd_action_high = (
+            torch.FloatTensor(edmd_action_high).to(self.device)
+            if edmd_action_high is not None else None
+        )
 
         # Networks (use safe_control_gym MLP implementations)
         self.low = torch.tensor(self.action_range[0], device=self.device)
@@ -130,36 +179,31 @@ class LCSAC:
         return action
 
     def lift_state(self, state_error):
-        """Lift state to EDMD lifted space
-
-        Args:
-            state_batch_np: Observation batch (n_batch, obs_dim) where obs_dim may be 24 for 2D
-                            The first 6 dimensions are the actual state for 2D quadrotor
-        """
-        # Extract state portion from observation
-        # For 2D: state is 6D [x, x_dot, z, z_dot, theta, theta_dot]
-        # For 2D EDMD model, we can directly use the 6D state
-        # The EDMD model was trained on 2D data, so it expects 6D input
-        if self.quadtype == "quadrotor_2D":
-            state_error_feats = state_error[:, :6].detach().cpu().numpy()
-        elif self.quadtype == "quadrotor_3D":
-            state_error_feats = state_error[:, :12].detach().cpu().numpy()
-        else:
-            raise ValueError(f"Invalid quadtype: {self.quadtype}")
-
-        if self.edmd_model is not None:
-            # Transform state to lifted space using EDMD observables
-            lifted_error = self.edmd_model.observables.transform(state_error_feats)
-        else:
-            # Fallback: if model not loaded, we can't lift (shouldn't happen if matrices are saved)
-            raise RuntimeError("EDMD model not loaded and cannot lift state")
-        return torch.FloatTensor(lifted_error).to(self.device)
+        """Lift tracking-error batch to EDMD observable space; returns tensor on self.device."""
+        feats = state_error[:, :self.state_error_dim].detach().cpu().numpy()
+        if self.edmd_model is None:
+            raise RuntimeError("EDMD model not loaded; cannot lift state.")
+        lifted = self.edmd_model.observables.transform(feats)
+        return torch.FloatTensor(lifted).to(self.device)
 
     def Lyapunov_fn(self, x: torch.Tensor) -> torch.Tensor:
         '''Lyapunov function V(x) = x^T P x'''
         assert x.ndim == 2, f"Expected 2D tensor, got {x.ndim}D"
         # ensure P_lifted is float32
         return torch.einsum('bi,ij,bj->b', x, self.P_lifted, x).unsqueeze(-1)
+
+    def _to_edmd_action(self, action: torch.Tensor) -> torch.Tensor:
+        """Rescale actor output to the action space used during EDMD fitting.
+
+        When normalized_rl_action_space=True, the actor outputs in [-1, 1] but B
+        was fitted on physical thrusts. This converts via the standard unscale formula.
+        If edmd_action_low is None (env already uses physical actions), returns action unchanged.
+        """
+        if self.edmd_action_low is None:
+            return action
+        lo = self.edmd_action_low.to(action.device)
+        hi = self.edmd_action_high.to(action.device)
+        return lo + 0.5 * (action + 1.0) * (hi - lo)
 
     def update(self, replay_buffer, batch_size):
         '''Updates the agent (matches official implementation).'''
@@ -246,15 +290,15 @@ class LCSAC:
         # Compute next tracking error prediction for Lyapunov decrease condition
         # Use the EDMD dynamics: tracking_error_next_lifted = A * tracking_error_current_lifted + B * action
         # Note: Gradients flow through action_new here, allowing the actor to learn actions that reduce violations
-        z_next_error = z_error @ self.A.T + action_new @ self.B.T
+        z_next_error = z_error @ self.A.T + self._to_edmd_action(action_new) @ self.B.T
         # Compute Lyapunov function values for tracking errors
-        V_current = self.Lyapunov_fn(z_error)
-        V_next = self.Lyapunov_fn(z_next_error)
+        V_current = self.Lyapunov_fn(z_error) - self.V_bias
+        V_next = self.Lyapunov_fn(z_next_error) - self.V_bias
 
         # Margin based on tracking error magnitude (decay rate)
         # Use the lifted tracking error magnitude for margin
         # y_lifted_tracking_error shape: (batch_size, lifted_dim)
-        margin = DECAY_RATE * V_current
+        margin = self.decay_rate * V_current
         lyap_violation = F.relu(V_next - V_current + margin)*mask  # zero out terminal states
 
         # Use CVaR loss instead of mean
@@ -265,9 +309,17 @@ class LCSAC:
         lyap_loss = lyap_topk.mean()
         #lyap_loss = lyap_violation.mean()
 
-        # Combined actor loss: weighted combination of SAC loss and Lyapunov loss
-        #total actor loss = policy loss + lambda * (lyap loss - eps)
-        total_actor_loss = policy_loss + self.lam.detach() * (lyap_loss - EPS)
+        # Lyapunov ramp: 0 → 1 over lyap_ramp_steps gradient updates.
+        # Gating both the actor loss weight AND the lambda accumulation prevents a large
+        # stored lambda from suddenly activating when the ramp reaches 1.
+        self._update_count += 1
+        if self.lyap_ramp_steps > 0:
+            lyap_ramp = min(1.0, self._update_count / self.lyap_ramp_steps)
+        else:
+            lyap_ramp = 1.0
+
+        # Combined actor loss: policy loss + ramped lambda * (lyap loss - eps)
+        total_actor_loss = policy_loss + lyap_ramp * self.lam.detach() * (lyap_loss - EPS)
         self.actor_optimizer.zero_grad()
         total_actor_loss.backward()
 
@@ -275,15 +327,10 @@ class LCSAC:
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=10.0)
         self.actor_optimizer.step()
 
-        # Update Lagrange multiplier
-        # self.lam_optim.zero_grad(set_to_none=True)
-        # dual_loss = -(self.lam * (lyap_loss.detach() - EPS))
-        # dual_loss.backward()
-        # self.lam_optim.step()
-        # with torch.no_grad():
-        #     self.lam.clamp_(0.0, self.lam_max)  # keep nonnegative
+        # Update Lagrange multiplier — also ramped so lambda doesn't accumulate
+        # while the constraint is inactive, preventing a sudden spike at ramp=1.
         with torch.no_grad():
-            self.lam.data += self.lam_lr * (lyap_loss.detach() - EPS)
+            self.lam.data += self.lam_lr * lyap_ramp * (lyap_loss.detach() - EPS)
             self.lam.data.clamp_(0.0, self.lam_max)
 
 
@@ -304,6 +351,7 @@ class LCSAC:
             'actor_loss': total_actor_loss.item(),
             'policy_loss': policy_loss.item(),
             'lyap_loss': lyap_loss.item(),
+            'lyap_ramp': lyap_ramp,
             'entropy_loss': entropy_loss.item() if isinstance(entropy_loss, torch.Tensor) else 0.0,
             'alpha': self.alpha.detach().item(),
             'actor_lr': self.actor_optimizer.param_groups[0]['lr'],
@@ -327,6 +375,7 @@ class LCSAC:
             'critic_optimizer': self.critic_optimizer.state_dict(),
             'log_alpha': self.log_alpha,
             'lam': self.lam,
+            '_update_count': self._update_count,
         }
         if self.use_entropy_tuning:
             state_dict['alpha_optimizer'] = self.alpha_optimizer.state_dict()
@@ -351,3 +400,5 @@ class LCSAC:
             self.alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer'])
         if 'lam' in checkpoint and checkpoint['lam'] is not None:
             self.lam.data.copy_(checkpoint['lam'].to(self.device).data)
+        if '_update_count' in checkpoint:
+            self._update_count = int(checkpoint['_update_count'])

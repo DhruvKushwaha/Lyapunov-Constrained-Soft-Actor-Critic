@@ -1,0 +1,34 @@
+# SAC hyperparameters for Cartpole.
+# Aligned with safe-control-gym examples/rl/config_overrides/cartpole/sac_cartpole.yaml.
+# tau, actor_lr, critic_lr are Optuna HPO results from the SCG reference (rounded).
+algo: sac
+algo_config:
+  hidden_dim: 256
+  activation: relu
+  use_entropy_tuning: False
+  target_entropy: null
+
+  gamma: 0.98
+  tau: 0.12145208815621376
+  init_temperature: 0.2
+
+  train_interval: 1
+  train_batch_size: 512
+  actor_lr: 4.52e-4
+  critic_lr: 2.25e-2
+  entropy_lr: 0.001
+
+  max_env_steps: 150000
+  warm_up_steps: 100
+  rollout_batch_size: 4
+  num_workers: 1
+  max_buffer_size: 1000000
+  deque_size: 10
+  eval_batch_size: 10
+
+  log_interval: 3000
+  save_interval: 0
+  num_checkpoints: 0
+  eval_interval: 3000
+  eval_save_best: True
+  tensorboard: False

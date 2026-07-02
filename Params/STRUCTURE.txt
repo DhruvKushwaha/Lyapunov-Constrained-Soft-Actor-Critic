@@ -1,0 +1,68 @@
+Params layout
+=============
+
+See **README.md** for install, ``train_rl`` usage, EDMD pipeline, and offline baselines.
+
+RL training (repo root)
+-----------------------
+  train_rl.py              Thin CLI; implementation in rl/train.py
+  python -m rl.train       Same as train_rl.py
+  rl/offline/              OfflineRL-Kit baselines (CQL, TD3+BC, MOPO, COMBO): eval wrapper,
+                           transitions .npz I/O, kit_runner
+  python -m rl.compare_summaries  Tabulate train_summary.json across runs
+
+  train_rl.py --algo sac|lcsac|cql|td3bc|mopo|combo --preset <name> ...
+  See train_rl.py --help for presets and overrides.
+
+EDMD (all under edmd/)
+  edmd/lqr.py              — discrete LQR + P diagnostics (shared by train_* scripts)
+  edmd/metrics.py          — matrix / one-step / rollout metrics (JSON-friendly)
+  edmd/collect_quad_2d.py  — PID → Saved_data/data_EDMD_2D.npz   (python -m edmd.collect_quad_2d)
+  edmd/collect_quad_3d.py — PID → data_EDMD_3D.npz
+  edmd/collect_cartpole.py — LQR → data_EDMD_cartpole.npz
+  edmd/train_quad_2d.py    — fit EDMD + LQR + figures + edmd_2d_metrics.json
+  edmd/train_quad_3d.py
+  edmd/train_cartpole.py
+  Train scripts save P-matrix heatmap, edmd_*_one_step_prediction.png (all error components),
+  edmd_*_multi_step_rollout.png (open-loop horizon error); metrics JSON lists figures.one_step_prediction + multi_step_rollout.
+
+PID configuration pairing
+-------------------------
+  algorithms/pid_drone_gains.yaml
+    Single Crazyflie-style gain set (matches safe_control_gym controllers/pid/pid.yaml).
+    Use with any quadrotor env (2D or 3D). Not applicable to Cartpole.
+
+  Quadrotor_2D/pid/env_track.yaml
+    task_config for PID + quadratic cost / EDMD collection; pair with pid_drone_gains.yaml.
+    Mass/inertia and trajectory_scale match Quadrotor_2D/env_track.yaml (RL default).
+
+  Quadrotor_3D/pid/env_track.yaml
+    3D figure8 tracking for PID experiments; pair with pid_drone_gains.yaml.
+    Inertial props match Quadrotor_3D/env_track_gym.yaml.
+
+  algorithms/prior_prop_2d_example.yaml
+    Example prior_info block for controllers that read algo_config (not used by PID_controller_quadrotor).
+
+
+algorithms/
+  sac_template.yaml       Flat SAC defaults (merge into algo_config as needed)
+  pid_drone_gains.yaml    Low-level quadrotor PID / PWM coefficients
+  prior_prop_2d_example.yaml  Example prior_info block for 2D experiments
+
+Quadrotor_2D/
+  env_track.yaml    Default trajectory tracking (RL scripts use this)
+  env_stab.yaml     Stabilization / hover benchmark
+  sac.yaml          SAC hyperparameters for 2D experiments
+  pid/env_track.yaml  Trajectory + quadratic cost (e.g. PID data collection)
+
+Quadrotor_3D/
+  env_stab.yaml         3D hover benchmark
+  env_track_gym.yaml    Tracking benchmark (normalized actions, figure8)
+  env_track_rl.yaml     Tracking with physical actions (circle); was Env/SAC
+  sac_gym.yaml          SAC aligned with safe-control-gym example (128 hidden)
+  sac_tuned.yaml        SAC with larger net + entropy tuning; was Env/SAC
+  pid/env_track.yaml    PID-style 3D figure8 (quadratic cost)
+
+Cartpole/
+  env_stab.yaml     Stabilization benchmark
+  sac.yaml          SAC hyperparameters
